@@ -1,0 +1,387 @@
+openapi: 3.0.3
+
+info:
+  title: Notes Service API
+  description: >
+    REST API клиент-серверного сервиса для создания,
+    хранения и синхронизации пользовательских заметок.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+
+tags:
+  - name: Authentication
+    description: Регистрация и аутентификация пользователей
+  - name: Notes
+    description: Работа с пользовательскими заметками
+  - name: Synchronization
+    description: Синхронизация данных между устройствами
+
+paths:
+
+  /auth/register:
+    post:
+      tags:
+        - Authentication
+      summary: Регистрация пользователя
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Пользователь успешно зарегистрирован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Пользователь с таким email уже существует
+
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Аутентификация пользователя
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Аутентификация выполнена успешно
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Неверный email или пароль
+
+  /notes:
+    get:
+      tags:
+        - Notes
+      summary: Получить список заметок
+      operationId: getNotes
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Список заметок пользователя
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Note'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Notes
+      summary: Создать новую заметку
+      operationId: createNote
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNoteRequest'
+      responses:
+        '201':
+          description: Заметка создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notes/{noteId}:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+
+    get:
+      tags:
+        - Notes
+      summary: Получить заметку по идентификатору
+      operationId: getNote
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Заметка найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags:
+        - Notes
+      summary: Изменить заметку
+      operationId: updateNote
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNoteRequest'
+      responses:
+        '200':
+          description: Заметка успешно изменена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Конфликт версий
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Notes
+      summary: Удалить заметку
+      operationId: deleteNote
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Заметка успешно удалена
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /sync:
+    get:
+      tags:
+        - Synchronization
+      summary: Получить изменения после последней синхронизации
+      operationId: synchronize
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: since
+          in: query
+          required: true
+          description: Время последней успешной синхронизации
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Изменения после указанного момента времени
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+
+    NoteId:
+      name: noteId
+      in: path
+      required: true
+      description: Уникальный идентификатор заметки
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - name
+      properties:
+        email:
+          type: string
+          format: email
+          example: student@example.com
+        password:
+          type: string
+          format: password
+          minLength: 8
+          example: StrongPassword123
+        name:
+          type: string
+          example: Milana
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: student@example.com
+        password:
+          type: string
+          format: password
+          example: StrongPassword123
+
+    AuthResponse:
+      type: object
+      required:
+        - accessToken
+        - tokenType
+      properties:
+        accessToken:
+          type: string
+          example: eyJhbGciOiJIUzI1NiJ9...
+        tokenType:
+          type: string
+          example: Bearer
+
+    Note:
+      type: object
+      required:
+        - id
+        - title
+        - content
+        - version
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          example: Лабораторная работа
+        content:
+          type: string
+          example: Подготовить архитектурный паспорт проекта.
+        version:
+          type: integer
+          minimum: 1
+          description: Версия заметки для контроля конкурентных изменений
+          example: 3
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateNoteRequest:
+      type: object
+      required:
+        - title
+        - content
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          example: Новая заметка
+        content:
+          type: string
+          example: Содержание заметки
+
+    UpdateNoteRequest:
+      type: object
+      required:
+        - version
+      properties:
+        title:
+          type: string
+          maxLength: 255
+        content:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+          description: Версия заметки, известная клиенту
+
+    SyncResponse:
+      type: object
+      required:
+        - synchronizedAt
+        - notes
+      properties:
+        synchronizedAt:
+          type: string
+          format: date-time
+        notes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Note'
+
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: VERSION_CONFLICT
+        message:
+          type: string
+          example: Note was modified by another client
+
+  responses:
+
+    BadRequest:
+      description: Некорректные данные запроса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Требуется аутентификация
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
