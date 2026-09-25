@@ -117,6 +117,8 @@ repo/
 │   └── architecture/
 │       ├── ADR-001.md
 │       ├── c4-diagram.drawio
+│       ├── c4-context.png
+│       ├── c4-container.png
 │       ├── openapi.yaml
 │       ├── er-diagram.drawio
 │       └── er-diagram.png
@@ -138,6 +140,10 @@ JWT-аутентификации и механизма версионирова�
 
 Содержит диаграммы System Context и Container.
 
+![System Context](docs/architecture/c4-context.png)
+
+![Container](docs/architecture/c4-container.png)
+
 ### OpenAPI
 
 `docs/architecture/openapi.yaml`
@@ -150,3 +156,5 @@ JWT-аутентификации и механизма версионирова�
 `docs/architecture/er-diagram.png` (исходник — `docs/architecture/er-diagram.drawio`)
 
 Отображает основные сущности системы и связи между ними.
+
+![ER-диаграмма](docs/architecture/er-diagram.png)
