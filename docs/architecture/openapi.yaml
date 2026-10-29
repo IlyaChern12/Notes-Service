@@ -12,8 +12,8 @@ servers:
     description: Local development server
 
 tags:
-  - name: Authentication
-    description: Регистрация и аутентификация пользователей
+  - name: Identity & Access
+    description: Регистрация, вход и управление токенами (модуль Identity & Access)
   - name: Notes
     description: Работа с пользовательскими заметками
   - name: Synchronization
@@ -24,7 +24,7 @@ paths:
   /auth/register:
     post:
       tags:
-        - Authentication
+        - Identity & Access
       summary: Регистрация пользователя
       operationId: registerUser
       requestBody:
@@ -48,7 +48,7 @@ paths:
   /auth/login:
     post:
       tags:
-        - Authentication
+        - Identity & Access
       summary: Аутентификация пользователя
       operationId: loginUser
       requestBody:
