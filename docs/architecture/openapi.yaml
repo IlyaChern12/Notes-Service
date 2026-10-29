@@ -5,7 +5,10 @@ info:
   description: >
     REST API клиент-серверного сервиса для создания,
     хранения и синхронизации пользовательских заметок.
-  version: 1.0.0
+    Версия 1.1 обратно совместимо расширяет 1.0 решениями ЛР2 и ЛР4:
+    обновление и отзыв токенов, ключ идемпотентности, проверка версии
+    при удалении, курсор и подтверждения синхронизации, теги и вложения.
+  version: 1.1.0
 
 servers:
   - url: http://localhost:8080/api/v1
@@ -15,9 +18,11 @@ tags:
   - name: Identity & Access
     description: Регистрация, вход и управление токенами (модуль Identity & Access)
   - name: Notes
-    description: Работа с пользовательскими заметками
+    description: Работа с пользовательскими заметками и тегами
   - name: Synchronization
     description: Синхронизация данных между устройствами
+  - name: Attachments
+    description: Вложения заметок
 
 paths:
 
@@ -44,12 +49,21 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '409':
           description: Пользователь с таким email уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /auth/login:
     post:
       tags:
         - Identity & Access
       summary: Аутентификация пользователя
+      description: >
+        Возвращает access token в теле ответа и устанавливает
+        refresh token в cookie (Secure, HttpOnly, SameSite=Strict, Path=/api/v1/auth).
       operationId: loginUser
       requestBody:
         required: true
@@ -60,12 +74,74 @@ paths:
       responses:
         '200':
           description: Аутентификация выполнена успешно
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SetRefreshCookie'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthResponse'
         '401':
           description: Неверный email или пароль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/refresh:
+    post:
+      tags:
+        - Identity & Access
+      summary: Обновить access token
+      description: >
+        Проверяет Origin и CSRF-заголовок, затем в одной транзакции
+        отзывает прежний refresh token и выпускает новый (ротация).
+        Повторное предъявление уже заменённого токена получает 401.
+      operationId: refreshToken
+      security:
+        - refreshCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: Выпущены новый access token и новый refresh token
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SetRefreshCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/logout:
+    post:
+      tags:
+        - Identity & Access
+      summary: Завершить текущий вход
+      description: >
+        Отзывает текущий refresh token и удаляет cookie. Access token
+        остаётся действительным до exp. Повторный вызов допустим.
+      operationId: logout
+      security:
+        - refreshCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: Вход завершён, cookie удалён
+          headers:
+            Set-Cookie:
+              description: Удаление refresh-cookie (Max-Age=0, тот же Path)
+              schema:
+                type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   /notes:
     get:
@@ -75,9 +151,31 @@ paths:
       operationId: getNotes
       security:
         - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Размер страницы
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: Значение X-Next-Cursor из предыдущего ответа (ключевая пагинация)
+          schema:
+            type: string
+            maxLength: 512
       responses:
         '200':
-          description: Список заметок пользователя
+          description: Список активных заметок пользователя
+          headers:
+            X-Next-Cursor:
+              description: Курсор следующей страницы; отсутствует на последней странице
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -94,6 +192,8 @@ paths:
       operationId: createNote
       security:
         - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -103,6 +203,11 @@ paths:
       responses:
         '201':
           description: Заметка создана
+          headers:
+            Location:
+              description: Адрес созданной заметки
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -111,6 +216,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/IdempotencyKeyReused'
 
   /notes/{noteId}:
     parameters:
@@ -139,9 +246,15 @@ paths:
       tags:
         - Notes
       summary: Изменить заметку
+      description: >
+        Условное обновление: изменение применяется, только если версия
+        в базе совпадает с переданной. При несовпадении данные не
+        перезаписываются и возвращается 409 с текущей версией.
       operationId: updateNote
       security:
         - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -155,24 +268,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Note'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Конфликт версий
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+          $ref: '#/components/responses/VersionConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyKeyReused'
 
     delete:
       tags:
         - Notes
       summary: Удалить заметку
+      description: >
+        Мягкое удаление: заметка помечается удалённой, получает новую
+        версию и передаётся устройствам при синхронизации.
       operationId: deleteNote
       security:
         - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: version
+          in: query
+          required: false
+          description: >
+            Версия заметки, известная клиенту. В версии API 1.x параметр
+            необязателен для совместимости; клиенты, поддерживающие его,
+            передают его всегда. В версии 2 станет обязательным.
+          schema:
+            type: integer
+            minimum: 1
       responses:
         '204':
           description: Заметка успешно удалена
@@ -180,32 +308,249 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/VersionConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyKeyReused'
+
+  /notes/{noteId}/tags:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    put:
+      tags:
+        - Notes
+      summary: Установить набор тегов заметки
+      description: >
+        Заменяет набор тегов целиком; отсутствующие у пользователя теги
+        создаются. Операция идемпотентна.
+      operationId: setNoteTags
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTagsRequest'
+      responses:
+        '200':
+          description: Набор тегов установлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetTagsRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /tags:
+    get:
+      tags:
+        - Notes
+      summary: Получить теги пользователя
+      operationId: getTags
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Справочник тегов пользователя
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Tag'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /sync:
     get:
       tags:
         - Synchronization
       summary: Получить изменения после последней синхронизации
+      description: >
+        Режим версии 1.0: параметр since (время последней синхронизации).
+        Режим 1.1: параметр cursor (позиция в ленте изменений) и заголовок
+        X-Device-Id; изменения считаются доставленными только после
+        подтверждения через POST /sync/{sessionId}/ack. Передаётся
+        либо since, либо cursor.
       operationId: synchronize
       security:
         - bearerAuth: []
       parameters:
         - name: since
           in: query
-          required: true
-          description: Время последней успешной синхронизации
+          required: false
+          description: Время последней успешной синхронизации (режим 1.0)
           schema:
             type: string
             format: date-time
+        - name: cursor
+          in: query
+          required: false
+          description: Непрозрачный курсор из предыдущего ответа (режим 1.1); пустое значение – с начала ленты
+          schema:
+            type: string
+            maxLength: 512
+        - $ref: '#/components/parameters/DeviceId'
+        - name: limit
+          in: query
+          required: false
+          description: Максимальный размер партии
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 200
       responses:
         '200':
-          description: Изменения после указанного момента времени
+          description: Изменения после указанного момента или позиции
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SyncResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /sync/{sessionId}/ack:
+    post:
+      tags:
+        - Synchronization
+      summary: Подтвердить обработку изменений устройством
+      description: >
+        Подтверждение означает успешную обработку изменений устройством.
+        Повторное подтверждение идемпотентно; контрольная точка не
+        перескакивает через неподтверждённые изменения.
+      operationId: acknowledgeSync
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncAckRequest'
+      responses:
+        '200':
+          description: Подтверждение принято
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncAckResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /notes/{noteId}/attachments:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      tags:
+        - Attachments
+      summary: Начать прикрепление файла
+      description: >
+        Создаёт вложение и попытку загрузки, возвращает временную ссылку
+        на загрузку во внешнее хранилище. Файл не считается прикреплённым
+        до подтверждения хранения.
+      operationId: startAttachment
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartAttachmentRequest'
+      responses:
+        '201':
+          description: Вложение и попытка загрузки созданы
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /attachments/{attachmentId}/attempts/{attemptId}/confirm:
+    post:
+      tags:
+        - Attachments
+      summary: Подтвердить сохранение файла и прикрепить его
+      description: >
+        Сервер проверяет сохранённый файл через ACL хранилища. Подтверждение
+        устаревшей или неуспешной попытки не меняет состояние вложения.
+      operationId: confirmAttachment
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AttachmentId'
+        - name: attemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Файл сохранён и прикреплён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Attachment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Попытка не является текущей или файл не найден в хранилище
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /attachments/{attachmentId}:
+    parameters:
+      - $ref: '#/components/parameters/AttachmentId'
+    get:
+      tags:
+        - Attachments
+      summary: Получить сведения о вложении и ссылку на файл
+      operationId: getAttachment
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Метаданные и временная ссылка на скачивание
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Attachment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
 components:
 
@@ -214,6 +559,18 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: Access token, срок 15 минут; claims sub, iat, exp
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+      description: Непрозрачный refresh token, срок 30 дней, ротация при каждом использовании
+
+  headers:
+    SetRefreshCookie:
+      description: refresh_token=...; Secure; HttpOnly; SameSite=Strict; Path=/api/v1/auth; Max-Age=2592000
+      schema:
+        type: string
 
   parameters:
 
@@ -222,6 +579,44 @@ components:
       in: path
       required: true
       description: Уникальный идентификатор заметки
+      schema:
+        type: string
+        format: uuid
+
+    AttachmentId:
+      name: attachmentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        UUID операции. Повтор с тем же ключом возвращает сохранённый
+        результат без повторного эффекта; тот же ключ с другим телом – 422.
+        Ключ хранится 24 часа.
+      schema:
+        type: string
+        format: uuid
+
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: CSRF-токен для операций, изменяющих состояние входа
+      schema:
+        type: string
+        maxLength: 256
+
+    DeviceId:
+      name: X-Device-Id
+      in: header
+      required: false
+      description: Идентификатор устройства для привязки сессии синхронизации (режим 1.1)
       schema:
         type: string
         format: uuid
@@ -238,14 +633,18 @@ components:
         email:
           type: string
           format: email
+          maxLength: 255
           example: student@example.com
         password:
           type: string
           format: password
           minLength: 8
+          maxLength: 128
           example: StrongPassword123
         name:
           type: string
+          minLength: 1
+          maxLength: 100
           example: Milana
 
     LoginRequest:
@@ -257,10 +656,12 @@ components:
         email:
           type: string
           format: email
+          maxLength: 255
           example: student@example.com
         password:
           type: string
           format: password
+          maxLength: 128
           example: StrongPassword123
 
     AuthResponse:
@@ -275,6 +676,10 @@ components:
         tokenType:
           type: string
           example: Bearer
+        expiresIn:
+          type: integer
+          description: Срок действия access token в секундах
+          example: 900
 
     Note:
       type: object
@@ -291,6 +696,7 @@ components:
           format: uuid
         title:
           type: string
+          maxLength: 255
           example: Лабораторная работа
         content:
           type: string
@@ -300,6 +706,18 @@ components:
           minimum: 1
           description: Версия заметки для контроля конкурентных изменений
           example: 3
+        tags:
+          type: array
+          items:
+            type: string
+            maxLength: 50
+        isDeleted:
+          type: boolean
+          description: Признак мягкого удаления; удалённые заметки приходят только в ответе /sync
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
         createdAt:
           type: string
           format: date-time
@@ -315,6 +733,7 @@ components:
       properties:
         title:
           type: string
+          minLength: 1
           maxLength: 255
           example: Новая заметка
         content:
@@ -328,6 +747,7 @@ components:
       properties:
         title:
           type: string
+          minLength: 1
           maxLength: 255
         content:
           type: string
@@ -335,6 +755,50 @@ components:
           type: integer
           minimum: 1
           description: Версия заметки, известная клиенту
+
+    Tag:
+      type: object
+      required:
+        - name
+        - notesCount
+      properties:
+        name:
+          type: string
+          maxLength: 50
+        notesCount:
+          type: integer
+          minimum: 0
+
+    SetTagsRequest:
+      type: object
+      required:
+        - tags
+      properties:
+        tags:
+          type: array
+          maxItems: 10
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 50
+
+    SyncChange:
+      type: object
+      required:
+        - eventId
+        - type
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [NoteCreated, NoteUpdated, NoteDeleted, AttachmentAttached]
+        note:
+          $ref: '#/components/schemas/Note'
+        attachment:
+          $ref: '#/components/schemas/Attachment'
 
     SyncResponse:
       type: object
@@ -347,8 +811,125 @@ components:
           format: date-time
         notes:
           type: array
+          description: Изменённые и удалённые заметки (оба режима)
           items:
             $ref: '#/components/schemas/Note'
+        sessionId:
+          type: string
+          format: uuid
+          description: Сессия синхронизации (режим 1.1)
+        changes:
+          type: array
+          description: Изменения партии с идентификаторами событий (режим 1.1)
+          items:
+            $ref: '#/components/schemas/SyncChange'
+        nextCursor:
+          type: string
+          description: Курсор следующей партии (режим 1.1)
+
+    SyncAckRequest:
+      type: object
+      required:
+        - eventIds
+      properties:
+        eventIds:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+            format: uuid
+
+    SyncAckResponse:
+      type: object
+      required:
+        - checkpoint
+        - completed
+      properties:
+        checkpoint:
+          type: string
+          description: Курсор, до которого все изменения подтверждены
+        completed:
+          type: boolean
+          description: Все изменения партии подтверждены
+
+    StartAttachmentRequest:
+      type: object
+      required:
+        - fileName
+        - mimeType
+        - sizeBytes
+      properties:
+        fileName:
+          type: string
+          minLength: 1
+          maxLength: 255
+        mimeType:
+          type: string
+          maxLength: 100
+          example: application/pdf
+        sizeBytes:
+          type: integer
+          minimum: 1
+          maximum: 104857600
+
+    UploadTicket:
+      type: object
+      required:
+        - attachmentId
+        - attemptId
+        - uploadUrl
+        - expiresAt
+      properties:
+        attachmentId:
+          type: string
+          format: uuid
+        attemptId:
+          type: string
+          format: uuid
+        uploadUrl:
+          type: string
+          format: uri
+          description: Временная ссылка на загрузку во внешнее хранилище
+        expiresAt:
+          type: string
+          format: date-time
+
+    Attachment:
+      type: object
+      required:
+        - id
+        - noteId
+        - fileName
+        - mimeType
+        - sizeBytes
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        noteId:
+          type: string
+          format: uuid
+        fileName:
+          type: string
+          maxLength: 255
+        mimeType:
+          type: string
+          maxLength: 100
+        sizeBytes:
+          type: integer
+          minimum: 0
+        status:
+          type: string
+          enum: [Pending, Uploading, Failed, Stored, Attached]
+        downloadUrl:
+          type: string
+          format: uri
+          description: Временная ссылка на скачивание (только для Attached)
+        createdAt:
+          type: string
+          format: date-time
 
     Error:
       type: object
@@ -362,6 +943,29 @@ components:
         message:
           type: string
           example: Note was modified by another client
+        details:
+          type: array
+          description: Ошибки по полям
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+
+    VersionConflictError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          required:
+            - currentVersion
+          properties:
+            currentVersion:
+              type: integer
+              minimum: 1
+            current:
+              $ref: '#/components/schemas/Note'
 
   responses:
 
@@ -379,8 +983,41 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
 
+    Forbidden:
+      description: Проверка Origin или CSRF-токена не пройдена
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
     NotFound:
-      description: Ресурс не найден
+      description: Ресурс не найден или принадлежит другому пользователю
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    VersionConflict:
+      description: Заметка изменена с другого устройства; данные не перезаписаны
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VersionConflictError'
+
+    IdempotencyKeyReused:
+      description: Ключ идемпотентности уже использован с другим телом запроса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    TooManyRequests:
+      description: Превышен лимит запросов
+      headers:
+        Retry-After:
+          description: Через сколько секунд можно повторить запрос
+          schema:
+            type: integer
       content:
         application/json:
           schema:

@@ -51,20 +51,30 @@ Notes Service — клиент-серверная система для созд
 
 ## API
 
-Контракт REST API описан с использованием спецификации OpenAPI 3.0.
+Контракт REST API описан с использованием спецификации OpenAPI 3.0 (версия контракта 1.1.0, обратно совместима с 1.0.0).
 
 Основные endpoint:
 
 | Метод | Endpoint | Назначение |
 |---|---|---|
 | POST | `/auth/register` | Регистрация пользователя |
-| POST | `/auth/login` | Аутентификация пользователя |
-| GET | `/notes` | Получение списка заметок |
+| POST | `/auth/login` | Вход: access token и refresh-cookie |
+| POST | `/auth/refresh` | Обновление access token с ротацией refresh |
+| POST | `/auth/logout` | Завершение текущего входа |
+| GET | `/notes` | Получение списка заметок (ключевая пагинация) |
 | POST | `/notes` | Создание заметки |
 | GET | `/notes/{noteId}` | Получение заметки |
-| PATCH | `/notes/{noteId}` | Изменение заметки |
-| DELETE | `/notes/{noteId}` | Удаление заметки |
-| GET | `/sync` | Получение изменений для синхронизации |
+| PATCH | `/notes/{noteId}` | Изменение заметки с проверкой версии |
+| DELETE | `/notes/{noteId}` | Мягкое удаление заметки |
+| PUT | `/notes/{noteId}/tags` | Установка тегов заметки |
+| GET | `/tags` | Справочник тегов пользователя |
+| GET | `/sync` | Получение изменений (since или cursor) |
+| POST | `/sync/{sessionId}/ack` | Подтверждение обработки изменений устройством |
+| POST | `/notes/{noteId}/attachments` | Начало прикрепления файла |
+| POST | `/attachments/{attachmentId}/attempts/{attemptId}/confirm` | Подтверждение хранения и прикрепление |
+| GET | `/attachments/{attachmentId}` | Сведения о вложении и ссылка на файл |
+
+Изменяющие операции принимают заголовок `Idempotency-Key`: повтор запроса после сбоя не создаёт второй эффект.
 
 Полная спецификация находится в:
 
