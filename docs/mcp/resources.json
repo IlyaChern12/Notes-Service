@@ -1,0 +1,39 @@
+{
+  "resources": [
+    {
+      "uriTemplate": "notes://{note_id}",
+      "name": "note",
+      "title": "Заметка",
+      "mimeType": "application/json",
+      "description": "Текущее состояние одной заметки пользователя. Используется клиентом для добавления заметки в контекст по выбору пользователя."
+    },
+    {
+      "uriTemplate": "notes://{note_id}/versions/{version}",
+      "name": "note_version",
+      "title": "Версия заметки",
+      "mimeType": "application/json",
+      "description": "Неизменяемый снимок одной сохранённой версии заметки."
+    },
+    {
+      "uriTemplate": "attachments://{attachment_id}",
+      "name": "attachment",
+      "title": "Сведения о вложении",
+      "mimeType": "application/json",
+      "description": "Метаданные одного вложения без содержимого файла."
+    },
+    {
+      "uri": "tags://me",
+      "name": "tags",
+      "title": "Теги пользователя",
+      "mimeType": "application/json",
+      "description": "Справочник тегов текущего пользователя с числом заметок."
+    },
+    {
+      "uri": "sync://devices",
+      "name": "devices",
+      "title": "Состояние синхронизации",
+      "mimeType": "application/json",
+      "description": "Устройства пользователя и результат их последней синхронизации."
+    }
+  ]
+}
